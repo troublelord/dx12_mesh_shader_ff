@@ -11,10 +11,10 @@
 
 struct VertexOut
 {
-   float3 PositionVS   : POSITION0;
+   float4 PositionVS   : SV_Position;
 };
 
 float4 main(VertexOut input) : SV_TARGET
 {
-    return float4(input.PositionVS, 1);
+    return input.PositionVS;
 }

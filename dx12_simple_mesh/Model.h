@@ -134,6 +134,8 @@ struct Accessor
 
 struct Prim
 {
+    D3D12_INPUT_ELEMENT_DESC   LayoutElems[Attribute::Count];
+
     std::vector<uint32_t>      Indices;
     uint32_t                   IndexSize;
     uint32_t                   IndexCount;
@@ -218,27 +220,15 @@ struct Mesh
 class Model
 {
 public:
-    int MapSemanticToAttributeIndex(const char* semantic);
     HRESULT LoadFromFile(const wchar_t* filename);
-    HRESULT LoadFromFile2(const wchar_t* filename);
     HRESULT LoadFromVtxBuffer(const std::vector<DirectX::XMFLOAT4>& positions);
-    HRESULT LoadFromRawBuffers(
-        const std::vector<uint8_t>& vertexBuffer,
-        const std::vector<uint8_t>& indexBuffer,
-        uint32_t vertexStride,
-        uint32_t vertexCount,
-        uint32_t indexCount,
-        bool use32BitIndices,
-        const std::vector<D3D12_INPUT_ELEMENT_DESC>& inputLayout);
-    HRESULT LoadFromMemory(
-        const std::vector<MeshHeader>& meshes,
-        const std::vector<Accessor>& accessors,
-        const std::vector<BufferView>& bufferViews,
-        const std::vector<uint8_t>& rawBuffer);
+    
     HRESULT UploadGpuResources(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, ID3D12CommandAllocator* cmdAlloc, ID3D12GraphicsCommandList* cmdList);
 
     uint32_t GetMeshCount() const { return static_cast<uint32_t>(m_meshes.size()); }
     const Mesh& GetMesh(uint32_t i) const { return m_meshes[i]; }
+    
+    const Prim& GetPrims() const { return m_prims; }
 
     const DirectX::BoundingSphere& GetBoundingSphere() const { return m_boundingSphere; }
 

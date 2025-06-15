@@ -62,6 +62,11 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
     ComPtr<ID3D12PipelineState> m_pipelineState;
     ComPtr<ID3D12Resource> m_constantBuffer;
+
+    ComPtr<ID3D12DescriptorHeap> m_dbgVtxHeap;
+    ComPtr<ID3D12Resource>       m_dbgVtxWriteBuffer;
+    ComPtr<ID3D12Resource>       m_dbgVtxReadbackBuffer;
+
     UINT m_rtvDescriptorSize;
     UINT m_dsvDescriptorSize;
 

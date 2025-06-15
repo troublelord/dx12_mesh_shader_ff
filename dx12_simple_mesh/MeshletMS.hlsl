@@ -12,10 +12,8 @@
 
 #define ROOT_SIG "CBV(b0), \
                   RootConstants(b1, num32bitconstants=2), \
-                  SRV(t0), \
-                  SRV(t1), \
-                  SRV(t2), \
-                  SRV(t3)"
+                  SRV(t0),\
+                  UAV(u0),"
 
 struct Constants
 {
@@ -27,23 +25,17 @@ struct Constants
 
 struct Vertex
 {
-    float3 Position;
-    float3 Normal;
+    float4 Position;
 };
 
 struct VertexOut
 {
-    float4 PositionHS   : SV_Position;
-    float3 PositionVS   : POSITION0;
+    float4 Position   : SV_Position;
 };
 
 ConstantBuffer<Constants> Globals             : register(b0);
-//ConstantBuffer<MeshInfo>  MeshInfo            : register(b1);
-
 StructuredBuffer<Vertex>  Vertices            : register(t0);
-//StructuredBuffer<Meshlet> Meshlets            : register(t1);
-//ByteAddressBuffer         UniqueVertexIndices : register(t2);
-//StructuredBuffer<uint>    PrimitiveIndices    : register(t3);
+RWStructuredBuffer<float4> debugOutput        : register(u0);
 
 
 [RootSignature(ROOT_SIG)]
@@ -52,22 +44,17 @@ StructuredBuffer<Vertex>  Vertices            : register(t0);
 void main(
     uint gtid : SV_GroupThreadID,
     uint gid : SV_GroupID,
-    out indices uint3 tris[126],
+    //out indices uint3 tris[126],
     out vertices VertexOut verts[64]
 )
 {
-    //Meshlet m = Meshlets[MeshInfo.MeshletOffset + gid];
 
-    SetMeshOutputCounts(gid, gid);
+    SetMeshOutputCounts(4, 1);
 
-    //if (gtid < m.PrimCount)
-    //{
-    ////    tris[gtid] = GetPrimitive(m, gtid);
-    ////}//
-
-    //if (gtid < m.VertCount)
-    tris[gtid] = uint3(gid, gid + 1, gid + 2);
-
-    verts[gtid].PositionVS = float4(Vertices[gtid].Position, 1);
-    verts[gtid].PositionHS = mul(float4(Vertices[gtid].Position, 1), Globals.WorldViewProj);
+    float4 output_pos = mul(Vertices[gtid].Position, Globals.WorldViewProj);
+    
+    debugOutput[gtid] = float4(1.0, 2.0, 3.0, 4.0);
+    
+    verts[gtid].Position = output_pos;
+    
 }

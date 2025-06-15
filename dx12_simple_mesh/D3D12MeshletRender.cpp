@@ -57,6 +57,12 @@ void D3D12MeshletRender::LoadPipeline()
             // Enable additional debug layers.
             dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
         }
+
+        ComPtr<ID3D12Debug1> debugController1;
+        if (SUCCEEDED(debugController->QueryInterface(IID_PPV_ARGS(&debugController1))))
+        {
+            debugController1->SetEnableGPUBasedValidation(TRUE);
+        }
     }
 #endif
 
@@ -154,6 +160,14 @@ void D3D12MeshletRender::LoadPipeline()
         ThrowIfFailed(m_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_dsvHeap)));
 
         m_dsvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+        // create dbg vtx output heap
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+        heapDesc.NumDescriptors = 1; // You only need 1 UAV
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // Needed for root descriptor tables
+
+        ThrowIfFailed(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_dbgVtxHeap)));
     }
 
     // Create frame resources.
@@ -224,7 +238,7 @@ void D3D12MeshletRender::LoadPipeline()
         // app closes. Keeping things mapped for the lifetime of the resource is okay.
         CD3DX12_RANGE readRange(0, 0);        // We do not intend to read from this resource on the CPU.
         ThrowIfFailed(m_constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&m_cbvDataBegin)));
-    }
+    }    
 }
 
 // Load the sample assets.
@@ -241,7 +255,42 @@ void D3D12MeshletRender::LoadAssets()
         ThrowIfFailed(CompileShaderToBlob(L"MeshletPS.hlsl", L"main", L"ps_6_5", &pixelShaderBlob));        
 
         // Pull root signature from the precompiled mesh shader.
-        ThrowIfFailed(m_device->CreateRootSignature(0, meshShaderBlob->GetBufferPointer(), meshShaderBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature)));
+        //ThrowIfFailed(m_device->CreateRootSignature(0, meshShaderBlob->GetBufferPointer(), meshShaderBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature)));
+        {
+           // 2. Define root parameters array (adjust size as needed)
+            CD3DX12_ROOT_PARAMETER rootParameters[4];
+
+            // 0 - CBV: Scene constant buffer (register b0)
+            rootParameters[0].InitAsConstantBufferView(0);
+
+            // 1 - 32-bit constants (2 values, register b1)
+            rootParameters[1].InitAsConstants(2, 1);
+
+            // 2 - SRV: Vertex buffer (register t0)
+            rootParameters[2].InitAsShaderResourceView(0);
+
+            // 3 - Descriptor table with UAV (register u0)
+            CD3DX12_DESCRIPTOR_RANGE uavRange;
+            uavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0); // 1 UAV at register(u0)
+            rootParameters[3].InitAsDescriptorTable(1, &uavRange);
+
+            // 4. Create the root signature descriptor
+            CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+            rootSignatureDesc.Init(_countof(rootParameters), rootParameters,
+                0, nullptr,  // No static samplers
+                D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+            // 5. Serialize and create the root signature
+            ComPtr<ID3DBlob> signature;
+            ComPtr<ID3DBlob> error;
+            ThrowIfFailed(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+                &signature, &error));
+            
+
+            ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(),
+                signature->GetBufferSize(),
+                IID_PPV_ARGS(&m_rootSignature)));
+        }
 
         D3DX12_MESH_SHADER_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.pRootSignature        = m_rootSignature.Get();
@@ -288,7 +337,38 @@ void D3D12MeshletRender::LoadAssets()
         {0.0,  0.0, 0.0 , 1.0}, };
 
     m_model.LoadFromVtxBuffer(positions);
-    //m_model.LoadFromFile(c_meshFilename);
+
+    {
+        // create dbg vtx buffer resources
+        {
+            const size_t dbgVtxSize = m_model.GetPrims().Vertices.size() * sizeof(m_model.GetPrims().Vertices[0]);
+            // create a UAV buffer to get mesh shader vertex output
+            D3D12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(dbgVtxSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            CD3DX12_HEAP_PROPERTIES heap1(D3D12_HEAP_TYPE_DEFAULT);
+            CD3DX12_HEAP_PROPERTIES heap2(D3D12_HEAP_TYPE_READBACK);
+
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &heap1,
+                D3D12_HEAP_FLAG_NONE,
+                &bufferDesc,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, // Important!
+                nullptr,
+                IID_PPV_ARGS(&m_dbgVtxWriteBuffer)));
+
+            bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(dbgVtxSize);
+
+            // create a CPU readback buffer
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &heap2,
+                D3D12_HEAP_FLAG_NONE,
+                &bufferDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&m_dbgVtxReadbackBuffer)));
+
+        }
+    }
+
     m_model.UploadGpuResources(m_device.Get(), m_commandQueue.Get(), m_commandAllocators[m_frameIndex].Get(), m_commandList.Get());
 
 #ifdef _DEBUG
@@ -299,12 +379,12 @@ void D3D12MeshletRender::LoadAssets()
         //{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 1 },
     };
 
-    for (auto& mesh : m_model)
     {
+        auto& prim = m_model.GetPrims();
         //assert(mesh.LayoutDesc.NumElements == 1);
 
         for (uint32_t i = 0; i < _countof(c_elementDescs); ++i)
-            assert(std::memcmp(&mesh.LayoutElems[i], &c_elementDescs[i], sizeof(D3D12_INPUT_ELEMENT_DESC)) == 0);
+            std::memcmp(&prim.LayoutElems[i], &c_elementDescs[i], sizeof(D3D12_INPUT_ELEMENT_DESC));
     }
 #endif
     
@@ -343,8 +423,10 @@ void D3D12MeshletRender::OnUpdate()
     m_camera.Update(static_cast<float>(m_timer.GetElapsedSeconds()));
 
     XMMATRIX world = XMMATRIX(g_XMIdentityR0, g_XMIdentityR1, g_XMIdentityR2, g_XMIdentityR3);
-    XMMATRIX view = m_camera.GetViewMatrix();
-    XMMATRIX proj = m_camera.GetProjectionMatrix(XM_PI / 3.0f, m_aspectRatio);
+    //XMMATRIX view = m_camera.GetViewMatrix();
+    XMMATRIX view = XMMATRIX(g_XMIdentityR0, g_XMIdentityR1, g_XMIdentityR2, g_XMIdentityR3);;
+    //XMMATRIX proj = m_camera.GetProjectionMatrix(XM_PI / 3.0f, m_aspectRatio);
+    XMMATRIX proj = XMMATRIX(g_XMIdentityR0, g_XMIdentityR1, g_XMIdentityR2, g_XMIdentityR3);;
     
     XMStoreFloat4x4(&m_constantBufferData.World, XMMatrixTranspose(world));
     XMStoreFloat4x4(&m_constantBufferData.WorldView, XMMatrixTranspose(world * view));
@@ -359,6 +441,33 @@ void D3D12MeshletRender::OnRender()
 {
     // Record all the commands we need to render the scene into the command list.
     PopulateCommandList();
+
+    WaitForGpu();
+
+    // Copy dbg Vtx data From GPU to Readback Buffer        
+    {
+        CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_dbgVtxWriteBuffer.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        m_commandList->ResourceBarrier(1, &barrier);
+
+        m_commandList->CopyResource(m_dbgVtxReadbackBuffer.Get(), m_dbgVtxWriteBuffer.Get());
+
+        void* pData = nullptr;
+        CD3DX12_RANGE readRange(0, m_model.GetPrims().VertexCount * sizeof(DirectX::XMFLOAT4));
+        m_dbgVtxReadbackBuffer->Map(0, &readRange, &pData);
+
+        // Cast and print
+        DirectX::XMFLOAT4* debugData = reinterpret_cast<DirectX::XMFLOAT4*>(pData);
+        for (int i = 0; i < m_model.GetPrims().VertexCount; ++i)
+        {
+            std::cout << "Pos: " << debugData[i].x << ", "
+                << debugData[i].y << ", "
+                << debugData[i].z << ", "
+                << debugData[i].w << std::endl;
+        }
+        m_dbgVtxReadbackBuffer->Unmap(0, nullptr);
+    }
 
     // Execute the command list.
     ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
@@ -421,19 +530,34 @@ void D3D12MeshletRender::PopulateCommandList()
 
     m_commandList->SetGraphicsRootConstantBufferView(0, m_constantBuffer->GetGPUVirtualAddress() + sizeof(SceneConstantBuffer) * m_frameIndex);
 
-    for (auto& mesh : m_model)
+    auto& prim = m_model.GetPrims();
     {
-        m_commandList->SetGraphicsRoot32BitConstant(1, mesh.IndexSize, 0);
-        m_commandList->SetGraphicsRootShaderResourceView(2, mesh.VertexResources[0]->GetGPUVirtualAddress());
-        //m_commandList->SetGraphicsRootShaderResourceView(3, mesh.MeshletResource->GetGPUVirtualAddress());
-        //m_commandList->SetGraphicsRootShaderResourceView(4, mesh.UniqueVertexIndexResource->GetGPUVirtualAddress());
-        //m_commandList->SetGraphicsRootShaderResourceView(5, mesh.PrimitiveIndexResource->GetGPUVirtualAddress());
+        m_commandList->SetGraphicsRoot32BitConstant(1, prim.IndexSize, 0);
+        m_commandList->SetGraphicsRootShaderResourceView(2, prim.VertexResources[0]->GetGPUVirtualAddress());
 
-        for (auto& subset : mesh.MeshletSubsets)
+        m_commandList->SetGraphicsRoot32BitConstant(1, 0, 1);
+
+        // setup debug
         {
-            m_commandList->SetGraphicsRoot32BitConstant(1, subset.Offset, 1);
-            m_commandList->DispatchMesh(subset.Count, 1, 1);
+            // create UAV
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+            uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+            uavDesc.Buffer.FirstElement = 0;
+            uavDesc.Buffer.NumElements = prim.Vertices.size();
+            uavDesc.Buffer.StructureByteStride = sizeof(prim.Vertices[0]);
+
+            m_device->CreateUnorderedAccessView(m_dbgVtxWriteBuffer.Get(), nullptr, &uavDesc,
+                m_dbgVtxHeap->GetCPUDescriptorHandleForHeapStart());
+
+            ID3D12DescriptorHeap* heaps[] = { m_dbgVtxHeap.Get() };
+            m_commandList->SetDescriptorHeaps(1, heaps);
+
+            m_commandList->SetGraphicsRootDescriptorTable(3, m_dbgVtxHeap->GetGPUDescriptorHandleForHeapStart());
+            
         }
+        
+        m_commandList->DispatchMesh(prim.Vertices.size(), 1, 1);        
     }
 
     // Indicate that the back buffer will now be used to present.
