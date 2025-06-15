@@ -49,11 +49,12 @@ void main(
 )
 {
 
-    SetMeshOutputCounts(4, 1);
+    SetMeshOutputCounts(9, 3);
 
     float4 output_pos = mul(Vertices[gtid].Position, Globals.WorldViewProj);
     
-    debugOutput[gtid] = float4(1.0, 2.0, 3.0, 4.0);
+    if (gtid == 0)
+      debugOutput[0] = float4(1.0, 2.0, 3.0, 4.0);
     
     verts[gtid].Position = output_pos;
     

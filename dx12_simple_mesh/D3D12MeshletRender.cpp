@@ -251,7 +251,7 @@ void D3D12MeshletRender::LoadAssets()
         ComPtr<IDxcBlob> meshShaderBlob;
         ComPtr<IDxcBlob> pixelShaderBlob;
 
-        ThrowIfFailed(CompileShaderToBlob(L"MeshletMS.hlsl", L"main", L"ms_6_5", &meshShaderBlob));
+        ThrowIfFailed(CompileShaderToBlob(L"MeshletMS.hlsl", L"main", L"ms_6_6", &meshShaderBlob));
         ThrowIfFailed(CompileShaderToBlob(L"MeshletPS.hlsl", L"main", L"ps_6_5", &pixelShaderBlob));        
 
         // Pull root signature from the precompiled mesh shader.
@@ -442,16 +442,38 @@ void D3D12MeshletRender::OnRender()
     // Record all the commands we need to render the scene into the command list.
     PopulateCommandList();
 
+    ID3D12CommandList* cmdLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(cmdLists), cmdLists);
+
+    // 3. Wait for GPU to finish execution before reading
     WaitForGpu();
 
     // Copy dbg Vtx data From GPU to Readback Buffer        
     {
+        // 4. Start a new command list for copy
+        ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset());
+
+        // However, when ExecuteCommandList() is called on a particular command 
+        // list, that command list can then be reset at any time and must be before 
+        // re-recording.
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), m_pipelineState.Get()));
+
         CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_dbgVtxWriteBuffer.Get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
         m_commandList->ResourceBarrier(1, &barrier);
 
-        m_commandList->CopyResource(m_dbgVtxReadbackBuffer.Get(), m_dbgVtxWriteBuffer.Get());
+        m_commandList->CopyResource(m_dbgVtxReadbackBuffer.Get(), m_dbgVtxWriteBuffer.Get());        
+    }
+
+    // Execute the command list.
+    // 7. Close and execute
+    ThrowIfFailed(m_commandList->Close());
+    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+    {
+        WaitForGpu();
 
         void* pData = nullptr;
         CD3DX12_RANGE readRange(0, m_model.GetPrims().VertexCount * sizeof(DirectX::XMFLOAT4));
@@ -468,10 +490,6 @@ void D3D12MeshletRender::OnRender()
         }
         m_dbgVtxReadbackBuffer->Unmap(0, nullptr);
     }
-
-    // Execute the command list.
-    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
     // Present the frame.
     ThrowIfFailed(m_swapChain->Present(1, 0));
@@ -546,8 +564,13 @@ void D3D12MeshletRender::PopulateCommandList()
             uavDesc.Buffer.FirstElement = 0;
             uavDesc.Buffer.NumElements = prim.Vertices.size();
             uavDesc.Buffer.StructureByteStride = sizeof(prim.Vertices[0]);
+            uavDesc.Buffer.CounterOffsetInBytes = 0;
+            uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 
-            m_device->CreateUnorderedAccessView(m_dbgVtxWriteBuffer.Get(), nullptr, &uavDesc,
+            m_device->CreateUnorderedAccessView(
+                m_dbgVtxWriteBuffer.Get(), 
+                nullptr, 
+                &uavDesc,
                 m_dbgVtxHeap->GetCPUDescriptorHandleForHeapStart());
 
             ID3D12DescriptorHeap* heaps[] = { m_dbgVtxHeap.Get() };
