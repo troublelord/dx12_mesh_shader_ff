@@ -268,16 +268,17 @@ HRESULT Model::LoadFromVtxBuffer(const std::vector<XMFLOAT4>& positions)
         { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
-    // You won't need an index buffer if you're using mesh shader to expand from vertex IDs
-    //std::vector<uint8_t> dummyIndexBuffer;
-
-    std::copy(positions.begin(), positions.end(), m_prims.Vertices.begin());
     m_prims.Indices.resize(positions.size());
     for (int i = 0; i < positions.size(); i++) {
         m_prims.Indices[i] = i;
     }
-
-    m_prims.push_back(std::move(prim));
+    m_prims.IndexCount = 3;
+    m_prims.IndexSize = m_prims.Indices.size();
+    
+    m_prims.Vertices.resize(positions.size());
+    std::copy(positions.begin(), positions.end(), m_prims.Vertices.begin());
+    m_prims.VertexCount = m_prims.Vertices.size();
+    
 
     return S_OK;
 }
@@ -722,21 +723,18 @@ HRESULT Model::UploadGpuResources(ID3D12Device* device, ID3D12CommandQueue* cmdQ
     
 
     prim.IBView.BufferLocation = prim.IndexResource->GetGPUVirtualAddress();
-    prim.IBView.Format = prim.IndexSize == 4 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
+    prim.IBView.Format = DXGI_FORMAT_R32_UINT;
     prim.IBView.SizeInBytes = prim.IndexCount * prim.IndexSize;
 
-    prim.VertexResources.resize(prim.Vertices.size());
-    prim.VBViews.resize(prim.Vertices.size());
+    prim.VertexResources.resize(1);
+    prim.VBViews.resize(1);
 
-    for (uint32_t j = 0; j < prim.Vertices.size(); ++j)
-    {
-        auto vertexDesc = CD3DX12_RESOURCE_DESC::Buffer(prim.Vertices[j].size());
-        device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &vertexDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&prim.VertexResources[j]));
+    auto vertexDesc = CD3DX12_RESOURCE_DESC::Buffer(prim.Vertices.size());
+    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &vertexDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&prim.VertexResources[0]));
 
-        prim.VBViews[j].BufferLocation = prim.VertexResources[j]->GetGPUVirtualAddress();
-        prim.VBViews[j].SizeInBytes = static_cast<uint32_t>(prim.Vertices[j].size());
-        prim.VBViews[j].StrideInBytes = prim.VertexStrides[j];
-    }
+    prim.VBViews[0].BufferLocation = prim.VertexResources[0]->GetGPUVirtualAddress();
+    prim.VBViews[0].SizeInBytes = static_cast<uint32_t>(prim.Vertices.size());
+    prim.VBViews[0].StrideInBytes = sizeof(DirectX::XMFLOAT4);
 
     // Create upload resources
     std::vector<ComPtr<ID3D12Resource>> vertexUploads;
@@ -746,15 +744,15 @@ HRESULT Model::UploadGpuResources(ID3D12Device* device, ID3D12CommandQueue* cmdQ
     ThrowIfFailed(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &indexDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexUpload)));
     
     // Map & copy memory to upload heap
-    vertexUploads.resize(prim.Vertices.size());
-    for (uint32_t j = 0; j < prim.Vertices.size(); ++j)
+    vertexUploads.resize(1);
+    for (uint32_t j = 0; j < 1; ++j)
     {
-        auto vertexDesc = CD3DX12_RESOURCE_DESC::Buffer(prim.Vertices[j].size());
+        auto vertexDesc = CD3DX12_RESOURCE_DESC::Buffer(prim.Vertices.size());
         ThrowIfFailed(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vertexDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexUploads[j])));
 
         uint8_t* memory = nullptr;
         vertexUploads[j]->Map(0, nullptr, reinterpret_cast<void**>(&memory));
-        std::memcpy(memory, prim.Vertices[j].data(), prim.Vertices[j].size());
+        std::memcpy(memory, prim.Vertices.data(), prim.Vertices.size());
         vertexUploads[j]->Unmap(0, nullptr);
     }
 
@@ -768,7 +766,7 @@ HRESULT Model::UploadGpuResources(ID3D12Device* device, ID3D12CommandQueue* cmdQ
     // Populate our command list
     cmdList->Reset(cmdAlloc, nullptr);
 
-    for (uint32_t j = 0; j < prim.Vertices.size(); ++j)
+    for (uint32_t j = 0; j < 1; ++j)
     {
         cmdList->CopyResource(prim.VertexResources[j].Get(), vertexUploads[j].Get());
         const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(prim.VertexResources[j].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

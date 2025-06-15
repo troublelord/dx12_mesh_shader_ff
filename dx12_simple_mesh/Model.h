@@ -134,8 +134,15 @@ struct Accessor
 
 struct Prim
 {
-    std::vector<uint32_t>  Indices;
+    std::vector<uint32_t>      Indices;
+    uint32_t                   IndexSize;
+    uint32_t                   IndexCount;
     std::vector<DirectX::XMFLOAT4> Vertices;
+    uint32_t                       VertexCount;
+
+    // D3D resource references
+    std::vector<D3D12_VERTEX_BUFFER_VIEW>  VBViews;
+    D3D12_INDEX_BUFFER_VIEW                IBView;
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> VertexResources;
     Microsoft::WRL::ComPtr<ID3D12Resource>              IndexResource;
